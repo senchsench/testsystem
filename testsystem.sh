@@ -17,7 +17,6 @@ testsystem_update "daemon.subr" "$testsystem" "root:wheel" "0750"
 testsystem_update "testsystem.subr" "$testsystem" "root:wheel" "0750"
 testsystem_update "testsystem.sh" "$testsystem" "root:wheel" "0750"
 testsystem_monitor
-rm -f $testsystem/daemon_start.sh
 
 exit 0
 ##### file complit testsystem #####
