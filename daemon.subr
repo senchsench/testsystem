@@ -1,0 +1,1899 @@
+#!/bin/sh
+
+# version=2010021909
+
+. /usr/local/etc/testsystem/testsystem.subr
+
+daemon()
+{
+  daemons=$1
+  if [ -f /var/run/nologin ];then
+    $testsystem/daemon_pager.sh "$daemons not start! Shutdown server..." 1
+   else
+    serv=`service $daemons status|grep running`
+    if [ ! -z "$serv" ];then
+      err_daemon="NO"
+      if [ -z "`echo $serv|grep pid`" ];then
+        $testsystem/daemon_pager.sh "$daemons killed..." 1
+        service $daemons restart
+      fi
+     else
+      $testsystem/daemon_pager.sh "$daemons not in system..." 1
+    fi
+  fi
+}
+
+pppoelink()
+{
+  intf="$1"
+  daemons="mpd5"
+  ip="192.168.11.3"
+  serv=`service $daemons status|grep running`
+  natd=`service natd status|grep running`
+  routes=`netstat -4rn|grep default|grep $ip`
+  test=`ifconfig $intf|grep carp`
+  if [ ! -z "$serv" -a ! -z "$natd" ];then
+    if [ ! -z "$test" ];then
+      if [ ! -z "`echo $test|grep MASTER`" ];then
+        if [ ! -z "$routes" ];then
+          route delete default
+          $testsystem/daemon_pager.sh "Delete default route $routes ..." 1
+        fi
+        if [ -z "`echo $serv|grep pid`" ];then
+          service $daemons start
+          $testsystem/daemon_pager.sh "Service pppoe start ..." 1
+          sleep 15
+        fi
+        if [ -z "`echo $natd|grep pid`" ];then
+          service natd start
+          $testsystem/daemon_pager.sh "Service natd start ..." 1
+        fi
+      else
+        if [ ! -z "`echo $natd|grep pid`" ];then
+          service natd stop
+          $testsystem/daemon_pager.sh "Service natd start ..." 1
+        fi
+        if [ ! -z "`echo $serv|grep pid`" ];then
+          service $daemons stop
+          $testsystem/daemon_pager.sh "Service pppoe stoped ..." 1
+        fi
+        if [ -z "$routes" ];then
+          route add default $ip
+          $testsystem/daemon_pager.sh "Add default route $ip ..." 1
+        fi
+      fi
+    else
+      $testsystem/daemon_pager.sh "Carp not enabled interface $intf ..." 1
+    fi
+  else
+     $testsystem/daemon_pager.sh "Service $daemons not activated ..." 1
+  fi
+}
+
+transparent_proxy()
+{
+  ipproxy="$1"
+  livep=`ping -c 2 -t 2 $ipproxy 2>&1 | grep time`
+  fwdproxy=`ipfw show |grep "fwd $ipproxy"`
+  if [ ! -z "$livep" ];then
+    if [ -z "$fwdproxy" ];then
+      err=`/sbin/ipfw add 95 fwd $ipproxy,3127 tcp from 192.168.0.0/16 to not 192.168.0.0/16 80 in 2>&1`
+     $testsystem/daemon_pager.sh "Add transparent proxy $ipproxy ..." 1
+    fi
+   else
+    if [ ! -z "$fwdproxy" ];then
+      err=`/sbin/ipfw delete 95 2>&1`
+     $testsystem/daemon_pager.sh "Delete transparent proxy $ipproxy ..." 1
+    fi
+  fi
+}
+
+nfs_mount()
+{
+server=$1
+server_mnt=$2
+mnt=$3
+#[root@sky /root]# ls -la /mnt/info
+#ls: /mnt/info: Stale NFS file handle
+if [ ! -d "$mnt" ];then
+  mkdir $mnt
+fi
+if [ "$mnt" ];then
+  host=`hostname`
+  live=`ping -c 2 -t 2 $server 2>&1 | grep time`
+  if [ -z "$live" ];then
+    mountfs=`mount -t nfs|grep $mnt`
+    if [ "$mountfs" ];then
+      umount -f $mnt
+      $testsystem/daemon_pager.sh "umount $server:$server_mnt(not ping)" 2
+    fi
+  else
+    testmnt=`ls -la $mnt 2>&1 | grep 'Stale NFS'`
+#    echo "$testmnt"
+    if [ ! -z "$testmnt" ];then
+      umount -f $mnt
+      $testsystem/daemon_pager.sh "umount $server:$server_mnt(Stale NFS)" 2
+    fi
+    showmountfs=`/usr/bin/showmount -e $server. | grep $server_mnt | grep $host`
+#    echo $showmount
+    mountfs=`mount -t nfs|grep $mnt`
+    if [ -z "$mountfs" ];then
+      if [ ! -z "$showmountfs" ];then
+#          mount_nfs -s -T -R5 -x5 $server:$server_mnt $mnt
+          mount_nfs -o soft -o tcp -o retrycnt=5 -o retrans=5 $server:$server_mnt $mnt
+          $testsystem/daemon_pager.sh "mount $server:$server_mnt" 2
+      fi
+    else
+      if [ -z "$showmountfs" ];then
+        umount -f $mnt
+        $testsystem/daemon_pager.sh "umount $server:$server_mnt(not export)" 2
+      fi
+    fi
+  fi
+else
+  $testsystem/daemon_pager.sh "Dir not exists $mnt" 2
+fi
+}
+
+showmount_test()
+{
+  server=$1
+  server_nmt=$2
+  showmount -e $server|while read mnt dst
+  do
+    if [ ! -z "`echo $server_mnt|grep $mnt`" ];then
+      echo -n "$mnt"
+    fi
+ done
+}
+
+nfs_mount_all()
+{
+server=$1
+server_mnt=$2
+mnt=$3
+live=`ping -c 4 -t 5 $server 2>&1 | grep time`
+mountfs=`mount|grep $mnt`
+if [ -z "$live" ];then
+  if [ "$mountfs" ];then
+    umount -f $mnt
+    $testsystem/daemon_pager.sh "umount $server:$server_mnt(not ping)" 2
+  fi
+else
+  showmountfs="`showmount_test $server $server_mnt`"
+  if [ -z "$mountfs" ];then
+    if [ ! -z "$showmountfs" ];then
+      if [ -d "$mnt" ];then
+        mount_nfs -s -T -R5 -x5 $server:$server_mnt $mnt
+        $testsystem/daemon_pager.sh "mount $server:$server_mnt" 2
+      else
+	$testsystem/daemon_pager.sh "Dir not exists $mnt" 2
+      fi
+    fi
+  else
+    if [ -z "$showmountfs" ];then
+      umount -f $mnt
+      $testsystem/daemon_pager.sh "umount $server:$server_mnt(not export)" 2
+    fi
+  fi
+fi
+}
+
+nsmbpw()
+{
+  file=$1
+  res=$2
+  t=""
+  cat $file|while read tmp
+  do
+    if [ ! -z "$t" -a ! -z "`echo $tmp|grep PASSWORD`" ];then
+      echo $tmp|cut -d= -f2
+      exit
+    fi
+    if [ ! -z "`echo $tmp|tr '[:lower:]' '[:upper:]'|grep $res`" ];then
+      t="ok"
+    fi
+  done
+}
+
+smbshare()
+{
+  DNSHOST=$1
+  USER=`echo $2|cut -d\@ -f1|cut -d\/ -f3|tr '[:lower:]' '[:upper:]'`
+  SMBRESOURSE=`echo $2|cut -d\/ -f4`
+  SMBHOST="`echo $2|cut -d\@ -f2|cut -d\/ -f1|tr '[:lower:]' '[:upper:]'`"
+#  echo "dns=$DNSHOST user=$USER host=$SMBHOST res=$SMBRESOURSE"
+  SMBNS="/etc/nsmb.conf"
+  REGS="DISK|$SMBRESOURSE|"
+  if [ ! -r "$SMBNS" ];then
+    echo err
+    exit 1
+  fi
+  if [ -f "/usr/local/bin/smbclient" ];then
+    SMBCLIENT="/usr/local/bin/smbclient"
+  else
+    if [ -f "/usr/local/samba/bin/smbclient" ];then
+	SMBCLIENT="/usr/local/samba/bin/smbclient"
+    else
+      echo "not"
+      exit 1
+    fi
+  fi
+  PASSWD=`nsmbpw $SMBNS $SMBHOST:$USER`
+#  echo "user=$USER password=$PASSWD"
+  if [ -z "$USER" ];then
+    echo err
+    exit 1
+  fi
+  if [ -z "$PASSWD" ];then
+    echo err
+    exit 1
+  fi
+#  echo "user=$USER password=$PASSWD"
+  RES=`$SMBCLIENT "//$SMBHOST/$SMBRESOURSE" $PASSWD -U $USER -I $DNSHOST -d 0 -g -c ls 2>&1|grep failed`
+#  echo "RES=$RES"
+  if [ ! -z "$RES" ];then
+    echo err
+  else
+    echo ok
+  fi
+}
+
+smb_mount ()
+{
+server=$1
+server_mnt=$2
+mnt=$3
+host=`hostname`
+if [ -d "$mnt" ];then
+  live=`ping -c 4 -t 5 $server 2>&1 | grep time`
+  mountfs=`mount|grep $mnt`
+  if [ -z "$live" ];then
+    if [ ! -z "$mountfs" ];then
+      umount -f $mnt
+      $testsystem/daemon_pager.sh "umount $server:$server_mnt(not ping)" 2
+    fi
+  else
+    live=`smbshare $server "$server_mnt"`
+#    echo $live
+    if [ -z "`echo $live|grep err`" ];then
+      if [ -z "$mountfs" ];then
+        mount_smbfs -I $server -N -R 5 -T 5 "$server_mnt" $mnt
+        $testsystem/daemon_pager.sh "mount $server:$server_mnt" 2
+      fi
+    else
+      if [ ! -z "$mountfs" ];then
+        umount -f $mnt
+        $testsystem/daemon_pager.sh "umount $server:$server_mnt(not export)" 2
+      fi
+    fi
+  fi
+else
+  $testsystem/daemon_pager.sh "Not dir $mnt" 2
+fi
+}
+
+rsync()
+{
+  dir_conf_file="$testsystem/$1.conf"
+  if [ ! -r $dir_conf_file ];then
+    echo "Not found config file $dir_conf_file"
+    exit 1
+   else
+    . $dir_conf_file
+  fi
+  rsync_arg=""
+  if [ ! -z "$rsync_ext" ];then
+      rsync_arg="$rsync_arg $rsync_ext"
+  fi
+  if [ ! -z "$rsync_bwlimit" ];then
+      rsync_arg="$rsync_arg --bwlimit=$rsync_bwlimit"
+  fi
+  if [ ! -z "$rsync_max_size" ];then
+      rsync_arg="$rsync_arg --max-size=$rsync_max_size"
+  fi
+  if [ ! -z "$rsync_password_file" ];then
+      rsync_arg="$rsync_arg --password-file=$rsync_password_file"
+  fi
+  if [ ! -z "$rsync_exclude" ];then
+    for dir in $rsync_exclude
+    do
+      rsync_arg="$rsync_arg --exclude='$dir'"
+    done
+  fi
+  echo>$rsync_log_file
+  for dir in $rsync_directory
+  do
+    echo "rsync $rsync_arg $rsync_source/$dir $rsync_destination">>$rsync_log_file
+    echo "#################################################">>$rsync_log_file
+    /usr/local/bin/rsync $rsync_arg $rsync_source/$dir $rsync_destination>>$rsync_log_file
+  done
+}
+
+read_spam()
+{
+TYPES=$1
+spamas="/etc/mail/spamassassin"
+set `ls -l /home/spam/mail/box|cut -c26-|grep $TYPES`
+if [ "$1" -gt 600 ];then
+    cd $spamas
+    if [ "$TYPES" ];then
+	if [ ! -d "/tmp/$TYPES" ];then
+	      mkdir /tmp/$TYPES
+	fi
+	$testsystem/mbox.pl /home/spam/mail/box/$TYPES /tmp/$TYPES/
+	/usr/local/bin/sa-learn --$TYPES /tmp/$TYPES/*|mail -s "*$TYPES*" root
+	rm -R /tmp/$TYPES
+	cat $spamas/box>/home/spam/mail/box/$TYPES
+    else
+	echo no parametres!
+    fi
+fi
+live=`ls -l $spamas|grep bayes_journal | grep -v lock | grep root`
+if [ "$live" ];then
+    chown mailnull $spamas/bayes_journal
+fi
+live=`ls -l $spamas|grep bayes_seen | grep -v lock | grep root`
+if [ "$live" ];then
+    chown mailnull $spamas/bayes_seen
+fi
+live=`ls -l $spamas|grep bayes_toks | grep -v lock | grep root`
+if [ "$live" ];then
+    chown mailnull $spamas/bayes_toks
+fi
+}
+
+del_dir()
+{
+  dir_conf_file="$testsystem/del_dir.conf"
+  dir_recycle=$1
+  dir_file="%Y_%m_%d_%H_%M_%S"
+  dir_dirs="`date +$dir_file`"
+  if [ ! -r $dir_conf_file ];then
+    echo "Not found config file $dir_conf_file"
+    exit 1
+  fi
+  if [ ! -d $dir_recycle ];then
+    echo "Not found directory $dir_recycle"
+    exit 1
+  fi
+  cat $dir_conf_file|grep -v '#'|while read dir_del dir_safe
+  do
+    if [ -d $dir_del ];then
+      ls -1w "$dir_del"|while read dir_cur
+      do
+        dir_test='NO'
+        for dir in $dir_safe
+        do
+          if [ ! -z `echo $dir_cur|grep $dir` ];then
+            dir_test='YES'
+          fi
+        done
+        if [ "$dir_test" = "NO" ];then
+          dir_name=`echo $dir_del | sed "s/\//\./" | sed "s/\//_/g"`
+          if [ ! -d "$dir_recycle/$dir_name" ];then
+            mkdir "$dir_recycle/$dir_name"
+	    chmod 0700 "$dir_recycle/$dir_name"
+          fi
+          if [ ! -d "$dir_recycle/$dir_name/$dir_dirs" ];then
+            mkdir "$dir_recycle/$dir_name/$dir_dirs"
+          fi
+          mv "$dir_del/$dir_cur" "$dir_recycle/$dir_name/$dir_dirs"
+          echo "move $dir_del/$dir_cur to $dir_recycle/$dir_name/$dir_dirs"
+        fi
+      done
+    else
+      echo "Not found directory $dir_del"
+    fi
+  done
+}
+
+apache_home_log_del()
+{
+home_dirs="/home"
+LOG_COUNT="12"
+date +"%Y_%m_%d_%H_%M"
+ls -1 $home_dirs|while read hdir
+do
+  if [ -d "$home_dirs/$hdir/log" ];then
+    echo $hdir
+    for LOGS in ^http-access ^http-error ^https-access ^https-error
+    do
+      while [ "`ls -1 $home_dirs/$hdir/log|grep $LOGS|wc -l`" -gt "$LOG_COUNT" ]
+      do
+        files="$home_dirs/$hdir/log/`ls -1 $home_dirs/$hdir/log|grep $LOGS|head -1`"
+        echo "$LOGS $files"
+        rm -f "$files"
+#	exit
+      done
+    done
+  fi
+done
+}
+
+mysql_quota_set()
+{
+BASE=$1
+if [ -z "$MOUNTSYSTEM" -o -z $FILESYSTEM ];then
+    echo "ERROR mount filesystem"
+    return 1
+fi
+if [ "$FILESYSTEM" = "zfs" ];then
+  qsize=`/sbin/zfs get -Hp -o value userquota@$BASE $MOUNTSYSTEM`
+  qsize=`expr -e $qsize / 1048576`
+else
+  qsize=`/usr/bin/quota -f $MOUNTSYSTEM -u $BASE | tail -1 | sed 's/ \{1,\}/:/g' | cut -d\: -f3`
+  qsize=`expr -e $qsize / 1024`
+fi
+
+if [ -z $qsize ];then
+ qsize=0
+fi
+
+qsize=`echo $qsize|cut -d\. -f1`
+bsize=`echo "SELECT ROUND(SUM(data_length + index_length) / 1024 / 1024, 0) AS 'size' FROM information_schema.tables WHERE table_schema = '$BASE';"|$GETMYSQL|tail -1`
+
+if [ -z $bsize -o "$bsize" = "NULL" ];then
+ bsize=0
+fi
+gquota=`echo "SHOW GRANTS FOR '$BASE'@'%';"|$GETMYSQL|grep "ON .$BASE.\.\*"|grep -E "ALL PRIVILEGES|INSERT"`
+
+#echo " q=$qsize b=$bsize g=$gquota"
+#exit 0
+
+if [ $bsize -gt $qsize ];then
+  echo -n " quota exceeded (cur=$bsize quota=$qsize) "
+  if [ ! -z "$gquota" ];then
+    echo "REVOKE $BASE"
+    echo "REVOKE INSERT,UPDATE,CREATE ON \`$BASE\`.* FROM '$BASE'@'localhost';"|$GETMYSQL > /dev/null
+    echo "REVOKE INSERT,UPDATE,CREATE ON \`$BASE\`.* FROM '$BASE'@'%';"|$GETMYSQL > /dev/null
+  fi
+else
+  if [ -z "$gquota" ];then
+    echo "GRANT $BASE"
+    echo "GRANT INSERT,UPDATE,CREATE ON \`$BASE\`.* TO '$BASE'@'localhost';"|$GETMYSQL > /dev/null
+    echo "GRANT INSERT,UPDATE,CREATE ON \`$BASE\`.* TO '$BASE'@'%';"|$GETMYSQL > /dev/null
+  fi
+fi
+}
+
+mysql_quota()
+{
+#mysql="/mnt/users/mysql"
+#homes="/mnt/users/home"
+#recycle="/mnt/users/info/.recycle"
+if [ -z "$mysql" -o ! -d "$mysql" ];then
+  echo "Not exists $mysql"
+  return 1
+fi
+if [ -z "$homes" -o ! -d "$homes" ];then
+  echo "Not exists $homes"
+  return 1
+fi
+if [ -z "$recycle" -o ! -d "$recycle" ];then
+  echo "Not exists $recycle"
+  return 1
+fi
+FILESYSTEM=`echo $QUOTAFILESYSTEM|cut -d\: -f1`
+MOUNTSYSTEM=`echo $QUOTAFILESYSTEM|cut -d\: -f2`
+if [ -z "$MOUNTSYSTEM" ];then
+    echo "ERROR mount filesystem($QUOTAFILESYSTEM)"
+    return 1
+fi
+if [ ! -d "$recycle/.mysql" ];then
+  mkdir $recycle/.mysql
+  chown root:wheel $recycle/.mysql
+  chmod 0700 $recycle/.mysql
+fi
+datas=`date +"%Y_%m_%d_%H_%M"`
+ls -1 $mysql|while read dir
+do
+  if [ -d "$mysql/$dir" ];then
+    if [ -d "$homes/$dir" ];then
+      if [ "$dir" != "mysql" ];then
+        mysql_quota_set $dir
+      fi
+    else
+      if [ ! -d "$recycle/.mysql/$datas" ];then
+        mkdir $recycle/.mysql/$datas
+        chown root:wheel $recycle/.mysql/$datas
+        chmod 0700 $recycle/.mysql/$datas
+      fi
+      if [ -d "$recycle/.mysql/$datas" ];then
+        mv $mysql/$dir $recycle/.mysql/$datas
+        $testsystem/daemon_pager.sh "Move $mysql/$dir to $recycle/.mysql/$datas" 1
+       else
+	$testsystem/daemon_pager.sh "Not $recycle/.mysql/$datas" 1
+      fi
+    fi
+  fi
+done
+}
+
+quotafs()
+{
+  param=$1
+  ufs=`mount|grep "$param "|grep ufs|cut -d' ' -f1`
+  if [ ! -z "$ufs" ];then
+    echo "User quota up limit of $param(ufs:$ufs):"
+    repquota -u $param | grep "-" | while read user ok use soft hard more
+    do
+      ts="no"
+      if [ "$use" -gt "$soft" -a "$soft" -ne "0" ];then
+        ts="yes"
+      fi
+      if [ "$use" -gt "$hard" -a "$hard" -ne "0" ];then
+        ts="yes"
+      fi
+      if [ "$ts" = "yes" ];then
+        echo "$user use=$use soft=$soft hard=$hard"
+      fi
+    done
+    echo "Group quota up limit of $param(ufs:$ufs):"
+    repquota -g $param | grep "-" | while read user ok use soft hard more
+    do
+      ts="no"
+      if [ "$use" -gt "$soft" -a "$soft" -ne "0" ];then
+        ts="yes"
+      fi
+      if [ "$use" -gt "$hard" -a "$hard" -ne "0" ];then
+        ts="yes"
+      fi
+      if [ "$ts" = "yes" ];then
+        echo "$user use=$use soft=$soft hard=$hard"
+      fi
+    done
+  fi
+  zfs=`mount|grep "$param "|grep zfs|cut -d' ' -f1`
+  if [ ! -z "$zfs" ];then
+    echo "User quota up limit of $param(zfs:$zfs):"
+    zfs userspace -Hp -o name,used,quota $zfs | while read user use quota more
+    do
+#      echo "$user use=$use quota=$quota"
+      if [ "$quota" = "none" -o -z "$quota" ];then
+        quota="0"
+      fi
+      if [ "$use" -gt "$quota" -a "$quota" -ne "0" ];then
+        echo "$user use=$use quota=$quota"
+      fi
+    done 
+    echo "Group quota up limit of $param(zfs:$zfs):"
+    zfs groupspace -Hp -o name,used,quota $zfs | while read user use quota more
+    do
+      if [ "$quota" = "none" -o -z "$quota" ];then
+        quota="0"
+      fi
+      if [ "$use" -gt "$quota" -a "$quota" -ne "0" ];then
+        echo "$user use=$use quota=$quota"
+      fi
+    done 
+  fi
+}
+
+freedisk()
+{
+#  netstat -n|grep 'tcp' > /mnt/system/_load/log/0/net.`hostname`
+  swapinfo|grep '/dev/'|while read dev bl us av cap
+  do
+    live=`echo $cap|cut -f1 -d%`
+#    echo "$dev $bl $us $av $cap $live"
+    if [ "$live" -gt 80 ]; then
+      $testsystem/daemon_pager.sh "not free space swap" 1
+      swapinfo
+    fi
+  done
+  df -lh|grep -v '/dev/md'|grep '/dev/'|while read dev sz us av cap fs
+  do
+    size="99"
+    if [ "$fs" = "/" ];then
+      size="80"
+    fi
+    if [ "$fs" = "/usr" ];then
+      size="90"
+    fi
+    if [ "$fs" = "/var" ];then
+      size="90"
+    fi
+    if [ "$fs" = "/mnt/users" ];then
+      size="95"
+    fi
+    live=`echo $cap|cut -f1 -d%`
+#    echo "$dev $sz $us $av $cap $fs $live"
+    if [ $live -gt $size ]; then
+      $testsystem/daemon_pager.sh "not free space $fs" 1
+      df -lh
+      echo
+      quotafs $fs
+      echo
+      if [ -f /usr/local/bin/smbstatus ];then
+        /usr/local/bin/smbstatus
+      fi
+    fi
+  done
+}
+
+videocam()
+{
+
+  if [ -z "$videocamdirs" ];then
+    echo "Not exists videocam dirs."
+    return 1
+  fi
+  datas=`date +"%Y%m%d"`
+  for camdir in $videocamdirs
+  do
+#    echo "camdir=$camdir"
+    if [ -d "$camdir" ];then
+      for cutdir in `ls -1 $camdir|grep "cam"`
+      do
+        cutdir="$camdir/$cutdir"
+        echo "cameradir=$cutdir"
+        if [ -d "$cutdir" ];then
+          ls -1 $cutdir|grep "motion_"|grep -v "\_$datas\_"|while read file
+          do
+            dirday=`echo $file|cut -d\_ -f2|cut -d\_ -f1`
+            if [ ! -d "$cutdir/$dirday" ];then
+              mkdir "$cutdir/$dirday"
+            fi
+            mv $cutdir/$file $cutdir/$dirday/$file
+            echo "move $cutdir/$file $cutdir/$dirday/$file"
+          done
+          ls -1 $cutdir|grep "^[0-9]*$"|grep -v "$datas"|while read file
+          do
+            if [ -d "$cutdir/$file" ];then
+              dirmon=`echo $file|cut -c1-4`_`echo $file|cut -c5-6`
+              if [ "$file" != "$dirmon" ];then
+                if [ ! -d "$cutdir/$dirmon" ];then
+                  mkdir "$cutdir/$dirmon"
+                fi
+                mv $cutdir/$file $cutdir/$dirmon/$file
+                echo "move $cutdir/$file $cutdir/$dirmon/$file"
+              fi
+            fi
+          done
+          if [ "$VIDEO_MONTH_COUNT" -gt "0" ];then
+            while [ "`ls -1F $cutdir|grep '/'|grep '_'|wc -l`" -gt "$VIDEO_MONTH_COUNT" ]
+            do
+              rm -rf "$cutdir/`ls -1F $cutdir|grep '/'|grep '_'|cut -d\/ -f1|head -1`"
+              echo "remove $cutdir/`ls -1F $cutdir|grep '/'|grep '_'|cut -d\/ -f1|head -1`"
+            done
+          fi
+         else
+          echo "Error open $cutdir!"
+        fi
+      done
+     else
+      echo "Error open $camdir!"
+    fi
+  done
+}
+
+backup_base_create_dir()
+{
+TMP="/tmp"
+if [ ! -z $backup_base_tmp ];then
+  if [ -d $backup_base_tmp ];then
+    TMP=$backup_base_tmp
+   else
+    echo "Error tmp $backup_base_tmp TMP=$TMP!"
+  fi
+fi
+if [ ! -d $TMP ];then
+  echo "Error TMP=$TMP!"
+  exit 1
+fi
+if [ -z $BACKUP_EXT ];then
+  BACKUP_EXT=""
+fi
+if [ -z $BACKUP_USER ];then
+  BACKUP_USER="root"
+fi
+if [ -z $BACKUP_ACCESS ];then
+  BACKUP_ACCESS="0640"
+fi
+if [ -z $COUNT_COUNT ];then
+  COUNT_COUNT="0"
+fi
+if [ -z $COUNT_SINGLE ];then
+  COUNT_SINGLE="2"
+fi
+if [ -z $COUNT_LOCAL ];then
+  COUNT_LOCAL="2"
+fi
+if [ -z $DAY_COUNT ];then
+  DAY_COUNT="14"
+fi
+if [ -z $WEEK_COUNT ];then
+  WEEK_COUNT="5"
+fi
+if [ -z $MONTH_COUNT ];then
+  MONTH_COUNT="12"
+fi
+if [ -z $YEAR_COUNT ];then
+  YEAR_COUNT="10"
+fi
+testerr="err"
+if [ ! -z "$backup_base_alt" ];then
+  for dir in $backup_base_alt
+  do
+    if [ -d "$dir" ];then
+      if [ ! -d "$dir/$HOST" ];then
+	mkdir $dir/$HOST
+      fi
+      if [ ! -d "$dir/$HOST/$backup_base_dir" ];then
+        mkdir $dir/$HOST/$backup_base_dir
+      fi
+      if [ -d "$dir/$HOST/$backup_base_dir" ];then
+        chmod 750 $dir/$HOST/$backup_base_dir
+        chown root $dir/$HOST/$backup_base_dir
+      fi
+      testerr="ok"
+    else
+      echo "Error create backup_base_alt dir=$dir"
+    fi
+  done
+fi
+if [ ! -z "$backup_base_single" ];then
+  for dir in $backup_base_single
+  do
+    if [ -d "$dir" ];then
+      if [ ! -d "$dir/$HOST" ];then
+	mkdir $dir/$HOST
+      fi
+      if [ ! -d "$dir/$HOST/$backup_base_dir" ];then
+        mkdir $dir/$HOST/$backup_base_dir
+      fi
+      if [ -d "$dir/$HOST/$backup_base_dir" ];then
+        chmod 750 $dir/$HOST/$backup_base_dir
+        chown root $dir/$HOST/$backup_base_dir
+      fi
+      testerr="ok"
+    else
+      echo "Error create backup_base_single dir=$dir"
+    fi
+  done
+fi
+if [ ! -z "$backup_base_local" ];then
+  testerr="ok"
+fi
+if [ "$testerr" = "err" ];then
+  exit 1
+fi
+
+}
+
+backup_base_single()
+{
+  if [ ! -d "$1" ];then
+    echo "Error backup single dir $1"
+    return 1
+  fi
+  if [ ! -z "$2" ];then
+    BACKUP_S_USER=$2
+  else
+    BACKUP_S_USER=$BACKUP_USER
+  fi
+  if [ ! -z "$3" ];then
+    BACKUP_S_ACCESS=$3
+  else
+    BACKUP_S_ACCESS=$BACKUP_ACCESS
+  fi
+  if [ ! -z "$4" ];then
+    COUNT_S_SINGLE=$4
+  else
+    COUNT_S_SINGLE=$COUNT_SINGLE
+  fi
+  if [ -d "$1" ];then
+    echo -n "copy single $1/$FILES.$EXT"
+    cd $1
+    nice -20 cp $TMP/$FILES.$EXT .
+    chown $BACKUP_S_USER $FILES.$EXT
+    chmod $BACKUP_S_ACCESS $FILES.$EXT
+    echo "-ok."
+    while [ "`ls -1 $BASE*.$EXT|wc -l`" -gt "$COUNT_S_SINGLE" ]
+    do
+	rm -f "`ls -1 $BASE*.$EXT|head -1`"
+    done
+  fi
+}
+
+backup_base()
+{
+if [ ! -d "$1" ];then
+  echo "Error backup base dir $1"
+  return 1
+fi
+if [ ! -z "$2" ];then
+    BACKUP_BASE_USER=$2
+else
+    BACKUP_BASE_USER=$BACKUP_USER
+fi
+if [ ! -z "$3" ];then
+    BACKUP_BASE_ACCESS=$3
+else
+    BACKUP_BASE_ACCESS=$BACKUP_ACCESS
+fi
+cd $1
+if [ ! -d "daily" ];then
+    mkdir daily
+fi
+if [ ! -d "weekly" ];then
+    mkdir weekly
+fi
+if [ ! -d "monthly" ];then
+    mkdir monthly
+fi
+if [ ! -d "yearly" ];then
+    mkdir yearly
+fi
+if [ "$COUNT_COUNT" -gt "0" ];then
+    echo -n "copy backup"
+    nice -20 cp $TMP/$FILES.$EXT .
+    chown $BACKUP_BASE_USER $FILES.$EXT
+    chmod $BACKUP_BASE_ACCESS $FILES.$EXT
+    echo "-ok."
+fi
+while [ "`ls -1 $BASE*.$EXT 2>&1|grep -v 'No such file'|wc -l`" -gt "$COUNT_COUNT" ]
+do
+    rm -f "`ls -1 $BASE*.$EXT|head -1`"
+done
+if [ "`date +%d`" != "`ls -1 daily|tail -1|cut -f2 -d-|cut -f3 -d_`" ];then
+    cd daily
+    if [ ! -f "$FILES.$EXT" ];then
+	echo -n "copy to daily"
+	nice -20 cp $TMP/$FILES.$EXT .
+	chown $BACKUP_BASE_USER $FILES.$EXT
+	chmod $BACKUP_BASE_ACCESS $FILES.$EXT
+        echo "-ok."
+    fi
+    while [ "`ls -1 $BASE*.$EXT|wc -l`" -gt "$DAY_COUNT" ]
+    do
+	rm -f "`ls -1 $BASE*.$EXT|head -1`"
+    done
+    cd ..
+    if [ "`date|cut -f1 -d" "`" = "Sun" -o -z "`ls -1 weekly`" ];then
+        cd weekly
+        if [ ! -f "$FILES.$EXT" ];then
+	    echo -n "copy to weekly"
+    	    nice -20 cp $TMP/$FILES.$EXT .
+	    chown $BACKUP_BASE_USER $FILES.$EXT
+	    chmod $BACKUP_BASE_ACCESS $FILES.$EXT
+	    echo "-ok."
+        fi
+        while [ "`ls -1 $BASE*.$EXT|wc -l`" -gt "$WEEK_COUNT" ]
+        do
+	    rm -f "`ls -1 $BASE*.$EXT|head -1`"
+	done
+	cd ..
+    fi
+    if [ "`date +%m`" != "`ls -1 monthly|tail -1|cut -f2 -d-|cut -f2 -d_`" ];then
+	cd monthly
+	if [ ! -f "$FILES.$EXT" ];then
+	    echo -n "copy to monthly"
+	    nice -20 cp $TMP/$FILES.$EXT .
+	    chown $BACKUP_BASE_USER $FILES.$EXT
+	    chmod $BACKUP_BASE_ACCESS $FILES.$EXT
+	    echo "-ok."
+	fi
+	while [ "`ls -1 $BASE*.$EXT|wc -l`" -gt "$MONTH_COUNT" ]
+	do
+	    rm -f "`ls -1 $BASE*.$EXT|head -1`"
+	done
+	cd ..
+    fi
+    if [ "`date +%Y`" != "`ls -1 yearly|tail -1|cut -f2 -d-|cut -f1 -d_`" ];then
+	cd yearly
+	if [ ! -f "$FILES.$EXT" ];then
+	    echo -n "copy to yearly"
+	    nice -20 cp $TMP/$FILES.$EXT .
+	    chown $BACKUP_BASE_USER $FILES.$EXT
+	    chmod $BACKUP_BASE_ACCESS $FILES.$EXT
+	    echo "-ok."
+	fi
+	while [ "`ls -1 $BASE*.$EXT|wc -l`" -gt "$YEAR_COUNT" ]
+	do
+	    rm -f "`ls -1 $BASE*.$EXT|head -1`"
+	done
+	cd ..
+    fi
+fi
+return 0
+}
+
+backup_firebird_remote()
+{
+#backup_base_enable="YES"
+#backup_base="base main test"
+#backup_base_alt="/mnt/backup/backup /mnt/daemon/backup"
+#backup_base_single="/mnt/backup/data/backup"
+#backup_base_tmp="/mnt/users/tmp"
+#backup_base_dir="backup_firebird_remote"
+#BACKUP_USER="root"
+#BACKUP_ACCESS="0640"
+#COUNT_LOCAL="3"
+#COUNT_SINGLE="3"
+#COUNT_COUNT="12"
+#DAY_COUNT="14"
+#WEEK_COUNT="5"
+#MONTH_COUNT="12"
+#YEAR_COUNT="10"
+#GBAK="gbak -T -B server:"
+
+HOST=`hostname`
+EXTO="FDB"
+EXTB="FBK"
+EXT="$EXTB.ZIP"
+FILES=""
+FILE1="%Y_%m_%d-%H_%M_%S"
+PATH="$PATH:/usr/local/bin:/usr/local/sbin"
+#echo "PATH=$PATH"
+
+case "$backup_base_enable" in
+    [Yy][Ee][Ss])
+	echo "Backup bases:"
+	backup_base_create_dir
+	for BASE in $backup_base
+	do
+	  test=`echo 'show tables;'|$ISQL$BASE|wc -l`
+	  if [ "$test" -ge "0" ];then
+		if [ ! -z "$backup_base_local" -o ! -z "$backup_base_alt" -o ! -z "$backup_base_single" ];then
+		    FILES="$BASE-`date +$FILE1`"
+		    echo -n "$BASE"
+		    cd $TMP
+		    echo > $TMP/$FILES.$EXTB
+		    chmod 600 $TMP/$FILES.$EXTB
+		    chown root $TMP/$FILES.$EXTB
+		    echo -n ">backup"
+		    err=`nice -20 $GBAK$BASE $TMP/$FILES.$EXTB 2>&1`
+		    if [ -z "$err" ];then
+		      echo -n "-ok>compress"
+		      nice -20 zip -j -b $TMP $TMP/$FILES.$EXT $TMP/$FILES.$EXTB > /dev/null
+		      echo "-ok>$FILES.$EXTB!"
+		      if [ ! -z "$backup_base_alt" ];then
+			for dir in $backup_base_alt
+        		do
+			  if [ -d "$dir/$HOST/$backup_base_dir" ];then
+			    if [ ! -d "$dir/$HOST/$backup_base_dir/$BASE" ];then
+	    			mkdir $dir/$HOST/$backup_base_dir/$BASE
+			    fi
+			    if [ -d "$dir/$HOST/$backup_base_dir/$BASE" ];then
+			      echo "Backup alt to $dir/$HOST/$backup_base_dir/$BASE"
+			      backup_base $dir/$HOST/$backup_base_dir/$BASE
+			    fi
+			  fi
+		        done
+		      fi
+		      if [ ! -z "$backup_base_single" ];then
+	    		for dir in $backup_base_single
+	    		do
+			  if [ -d "$dir/$HOST/$backup_base_dir" ];then
+			    if [ ! -d "$dir/$HOST/$backup_base_dir/$BASE" ];then
+	    			mkdir "$dir/$HOST/$backup_base_dir/$BASE"
+			    fi
+			    if [ -d "$dir/$HOST/$backup_base_dir/$BASE" ];then
+			      backup_base_single "$dir/$HOST/$backup_base_dir/$BASE"
+			    fi
+			  fi
+	    		done
+		      fi
+		    else
+		      echo "-Err!"
+		    fi
+		    if [ -f "$TMP/$FILES.$EXT" ];then
+		      rm $TMP/$FILES.$EXT
+		    fi
+		    if [ -f "$TMP/$FILES.$EXTB" ];then
+		      rm $TMP/$FILES.$EXTB
+		    fi
+		    echo
+		else
+	    	    echo "Error create backup!"
+		fi
+	  fi
+	done
+	;;
+esac
+}
+
+backup_firebird_home()
+{
+#backup_base_enable="YES"
+#backup_base="/mnt/users/firebird"
+#backup_base_home="/home"
+#backup_base_alt="/mnt/backup/backup /mnt/daemon/backup"
+#backup_base_single="/mnt/backup/data/backup"
+#backup_base_tmp="/mnt/users/tmp"
+#backup_base_max="2200000000"
+#backup_base_dir="backup_firebird"
+#BACKUP_USER="root"
+#BACKUP_ACCESS="0640"
+#COUNT_LOCAL="3"
+#COUNT_SINGLE="3"
+#COUNT_COUNT="12"
+#DAY_COUNT="14"
+#WEEK_COUNT="5"
+#MONTH_COUNT="12"
+#YEAR_COUNT="10"
+#GBAK="gbak -T -B"
+
+HOST=`hostname`
+EXTO="fdb"
+EXTB="fbk"
+EXT="$EXTB.gz"
+FILES=""
+FILE1="%Y_%m_%d-%H_%M_%S"
+PATH="$PATH:/usr/local/bin:/usr/local/sbin"
+echo "PATH=$PATH"
+
+case "$backup_base_enable" in
+    [Yy][Ee][Ss])
+	echo "Backup bases:"
+	backup_base_create_dir
+	ls -1 $backup_base|grep "$EXTO"|cut -d\. -f1|while read BASE
+	do
+	  if [ -f "$backup_base/$BASE.$EXTO" ];then
+	  fb_tmp="$BASE-`date +$FILE1`.tmp"
+	  echo "select count(rdb\$relation_name) from rdb\$relations where rdb\$relation_name not like 'RDB\$%';">$TMP/$fb_tmp
+	  count_db=`$ISQL -i $TMP/$fb_tmp $BASE|tail +4`
+	  ls -la $backup_base/$BASE.$EXTO |while read t1 t2 t3 t4 t5 t6
+	  do
+	    echo "$t5">$TMP/$fb_tmp
+	  done
+	  size_db=`cat $TMP/$fb_tmp`
+	  rm $TMP/$fb_tmp
+	  quota_db=`quota $BASE|grep "\*"`
+	  if [ "$count_db" -gt "0" -a -z "$quota_db" -a "$size_db" -lt "$backup_base_max" ];then
+	    if [ -d "$backup_base_home/$BASE" ];then
+		if [ ! -z "$backup_base_local" -o ! -z "$backup_base_alt" -o ! -z "$backup_base_single" ];then
+		    FILES="$BASE-`date +$FILE1`"
+		    echo -n "$BASE"
+		    cd $TMP
+		    echo > $TMP/$FILES.$EXTB
+		    chmod 600 $TMP/$FILES.$EXTB
+		    chown root $TMP/$FILES.$EXTB
+		    echo -n ">backup"
+		    err=`nice -20 $GBAK$BASE $TMP/$FILES.$EXTB 2>&1`
+		    if [ -z "$err" ];then
+		      echo -n "-ok>compress"
+		      nice -20 gzip $TMP/$FILES.$EXTB
+		      echo "-ok>$FILES.$EXTB!"
+		      if [ ! -z "$backup_base_local" ];then
+			backup_to_base="$backup_base_home/$BASE/$backup_base_dir"
+			if [ ! -d "$backup_to_base" ];then
+	    		  mkdir $backup_to_base
+			  chown $BASE $backup_to_base
+			  chmod 700 $backup_to_base
+			fi
+			if [ -d "$backup_to_base" ];then
+			  echo "Backup local to $backup_to_base"
+#		          backup_base "$backup_to_base" "" "0640"
+			  if [ "`date +%d`" != "`ls -1 $backup_to_base|tail -1|cut -f2 -d-|cut -f3 -d_`" ];then
+		            backup_base_single "$backup_to_base" "" "0640" "$COUNT_LOCAL"
+		          fi
+		        fi
+		      fi
+		      if [ ! -z "$backup_base_alt" ];then
+			for dir in $backup_base_alt
+        		do
+			  if [ -d "$dir/$HOST/$backup_base_dir" ];then
+			    if [ ! -d "$dir/$HOST/$backup_base_dir/$BASE" ];then
+	    			mkdir $dir/$HOST/$backup_base_dir/$BASE
+			    fi
+			    if [ -d "$dir/$HOST/$backup_base_dir/$BASE" ];then
+			      echo "Backup alt to $dir/$HOST/$backup_base_dir/$BASE"
+			      backup_base $dir/$HOST/$backup_base_dir/$BASE
+			    fi
+			  fi
+		        done
+		      fi
+		      if [ ! -z "$backup_base_single" ];then
+	    		for dir in $backup_base_single
+	    		do
+			  if [ -d "$dir/$HOST/$backup_base_dir" ];then
+			    if [ ! -d "$dir/$HOST/$backup_base_dir/$BASE" ];then
+	    			mkdir "$dir/$HOST/$backup_base_dir/$BASE"
+			    fi
+			    if [ -d "$dir/$HOST/$backup_base_dir/$BASE" ];then
+			      backup_base_single "$dir/$HOST/$backup_base_dir/$BASE"
+			    fi
+			  fi
+	    		done
+		      fi
+		    else
+		      echo "-Err($err)!"
+		    fi
+		    if [ -f "$TMP/$FILES.$EXT" ];then
+		      rm $TMP/$FILES.$EXT
+		    fi
+		    if [ -f "$TMP/$FILES.$EXTB" ];then
+		      rm $TMP/$FILES.$EXTB
+		    fi
+		    echo
+		else
+	    	    echo "Error create backup!"
+		fi
+	    fi
+	  fi
+	  fi
+	done
+	;;
+esac
+}
+
+backup_mysql_home()
+{
+#backup_base_enable="YES"
+#backup_base="/var/db/mysql"
+#backup_base_home="/home"
+#backup_base_alt="/mnt/backup/backup /mnt/daemon/backup"
+#backup_base_single="/mnt/backup/data/backup"
+#backup_base_tmp="/mnt/users/tmp"
+#backup_base_dir="backup_mysql"
+#BACKUP_USER="root"
+#BACKUP_ACCESS="0640"
+#COUNT_LOCAL="3"
+#COUNT_SINGLE="3"
+#COUNT_COUNT="12"
+#DAY_COUNT="14"
+#WEEK_COUNT="5"
+#MONTH_COUNT="12"
+#YEAR_COUNT="10"
+#GBAK="mysqldump --host=localhost --user=root --password=gh4tdGd42JMa --force --databases"
+
+HOST=`hostname`
+EXTB="sql"
+EXT="$EXTB.gz"
+FILES=""
+FILE1="%Y_%m_%d-%H_%M_%S"
+PATH="$PATH:/usr/local/bin:/usr/local/sbin"
+echo "PATH=$PATH"
+
+case "$backup_base_enable" in
+    [Yy][Ee][Ss])
+	echo "Backup bases:"
+	backup_base_create_dir
+	ls -1 "$backup_base/"|while read BASE
+	do
+	  if [ -d "$backup_base/$BASE" ];then
+	  count_db=`ls -1 $backup_base/$BASE|wc -l`
+	  quota_db=`quota $BASE|grep "\*"`
+	  if [ "$count_db" -gt "2" -a -z "$quota_db" ];then
+	    if [ -d "$backup_base_home/$BASE" ];then
+		if [ ! -z "$backup_base_local" -o ! -z "$backup_base_alt" -o ! -z "$backup_base_single" ];then
+		    FILES="$BASE-`date +$FILE1`"
+		    echo -n "$BASE"
+		    cd $TMP
+		    echo > $TMP/$FILES.$EXTB
+		    chmod 600 $TMP/$FILES.$EXTB
+		    chown root $TMP/$FILES.$EXTB
+		    if [ ! -z "$GREPAIR" ];then
+			echo -n ">repair"
+			err=`nice -20 $GREPAIR $BASE 2>&1 > /dev/null`
+			echo -n "-ok"
+		    fi
+		    if [ ! -z "$GOPTIMIZE" ];then
+			echo -n "-ok>optimize"
+			err=`nice -20 $GOPTIMIZE $BASE 2>&1 > /dev/null`
+			echo -n "-ok"
+		    fi
+		    echo -n ">backup"
+		    err=`nice -20 $GBAK $BASE 2>&1 > $TMP/$FILES.$EXTB`
+		    if [ -z "$err" ];then
+		      echo -n "-ok>compress"
+		      nice -20 gzip $TMP/$FILES.$EXTB
+		      echo "-ok>$FILES.$EXTB!"
+		      if [ ! -z "$backup_base_local" ];then
+		        backup_to_base="$backup_base_home/$BASE/$backup_base_dir"
+		        if [ ! -d "$backup_to_base" ];then
+	    	          mkdir $backup_to_base
+		          chown $BASE $backup_to_base
+		          chmod 700 $backup_to_base
+		        fi
+			if [ -d "$backup_to_base" ];then
+		          echo "Backup local to $backup_to_base"
+##		          backup_base "$backup_to_base" "" "0640"
+			  if [ "`date +%d`" != "`ls -1 $backup_to_base|tail -1|cut -f2 -d-|cut -f3 -d_`" ];then
+		            backup_base_single "$backup_to_base" "" "0640" "$COUNT_LOCAL"
+			  fi
+		        fi
+		      fi
+		      if [ ! -z "$backup_base_alt" ];then
+			for dir in $backup_base_alt
+        		do
+			  if [ -d "$dir/$HOST/$backup_base_dir" ];then
+			    if [ ! -d "$dir/$HOST/$backup_base_dir/$BASE" ];then
+	    			mkdir $dir/$HOST/$backup_base_dir/$BASE
+			    fi
+			    if [ -d "$dir/$HOST/$backup_base_dir/$BASE" ];then
+			      echo "Backup alt to $dir/$HOST/$backup_base_dir/$BASE"
+			      backup_base $dir/$HOST/$backup_base_dir/$BASE
+			    fi
+			  fi
+		        done
+		      fi
+		      if [ ! -z "$backup_base_single" ];then
+	    		for dir in $backup_base_single
+	    		do
+			  if [ -d "$dir/$HOST/$backup_base_dir" ];then
+			    if [ ! -d "$dir/$HOST/$backup_base_dir/$BASE" ];then
+	    			mkdir "$dir/$HOST/$backup_base_dir/$BASE"
+			    fi
+			    if [ -d "$dir/$HOST/$backup_base_dir/$BASE" ];then
+			      backup_base_single "$dir/$HOST/$backup_base_dir/$BASE"
+			    fi
+			  fi
+	    		done
+		      fi
+		    else
+		      echo "-Err($err)"
+		    fi
+		    if [ -f "$TMP/$FILES.$EXT" ];then
+		      rm $TMP/$FILES.$EXT
+		    fi
+		    if [ -f "$TMP/$FILES.$EXTB" ];then
+		      rm $TMP/$FILES.$EXTB
+		    fi
+		    echo
+		else
+	    	    echo "Error create backup!"
+		fi
+	    fi
+	  fi
+	  fi
+	done
+	;;
+esac
+}
+
+backup_dir_test()
+{
+  for dir in ${2}
+  do
+    if [ -d "${1}/$dir" ];then
+      echo -n "$dir "
+    fi
+  done
+  
+}
+
+backup_dir_home()
+{
+#backup_base_enable="YES"
+#backup_base="www wwws"
+#backup_base_home="/home"
+#backup_base_alt="/mnt/backup/backup /mnt/daemon/backup"
+#backup_base_single="/mnt/backup/data/backup"
+#backup_base_tmp="/mnt/users/tmp"
+#backup_base_dir="backup_home"
+#BACKUP_USER="root"
+#BACKUP_ACCESS="0640"
+#COUNT_LOCAL="3"
+#COUNT_SINGLE="3"
+#COUNT_COUNT="12"
+#DAY_COUNT="14"
+#WEEK_COUNT="5"
+#MONTH_COUNT="12"
+#YEAR_COUNT="10"
+#GBAK="tar -cf"
+
+FILTER=""
+if [ ! -z "$backup_base_filter" -a -f "$backup_base_filter" ];then
+    FILTER="-X $backup_base_filter"
+fi
+HOST=`hostname`
+EXTB='tar'
+EXT="$EXTB.gz"
+FILES=""
+FILE1="%Y_%m_%d-%H_%M_%S"
+PATH="$PATH:/usr/local/bin:/usr/local/sbin"
+echo "PATH=$PATH"
+
+case "$backup_base_enable" in
+    [Yy][Ee][Ss])
+	echo "Backup bases:"
+	backup_base_create_dir
+	ls -1 $backup_base_home|while read BASE
+	do
+	  backup_dir_base=`backup_dir_test "$backup_base_home/$BASE" "$backup_base"`
+	  if [ ! -z "$backup_dir_base" ];then
+	    if [ -d "$backup_base_home/$BASE" ];then
+		if [ ! -z "$backup_base_local" -o ! -z "$backup_base_alt" -o ! -z "$backup_base_single" ];then
+		    FILES="$BASE-`date +$FILE1`"
+		    echo -n "$BASE"
+		    cd $TMP
+		    echo > $TMP/$FILES.$EXTB
+		    chmod 600 $TMP/$FILES.$EXTB
+		    chown root $TMP/$FILES.$EXTB
+		    echo -n ">backup($backup_dir_base)"
+		    err=`nice -20 $GBAK $TMP/$FILES.$EXTB $FILTER -C $backup_base_home/$BASE $backup_dir_base 2>&1`
+		    if [ -z "$err" ];then
+		      echo -n "-ok>compress"
+		      nice -20 gzip $TMP/$FILES.$EXTB
+		      echo "-ok>$FILES.$EXT!"
+		      if [ ! -z "$backup_base_local" ];then
+			backup_to_dir="$backup_base_home/$BASE/$backup_base_dir"
+			if [ ! -d "$backup_to_dir" ];then
+	    		    mkdir $backup_to_dir
+			    chown $BASE $backup_to_dir
+			    chmod 700 $backup_to_dir
+			fi
+			if [ -d "$backup_to_dir" ];then
+		          echo "Bakup local to $backup_to_dir"
+#		          backup_base "$backup_to_dir" "" "0640"
+			  if [ "`date +%d`" != "`ls -1 $backup_to_dir|tail -1|cut -f2 -d-|cut -f3 -d_`" ];then
+			    backup_base_single "$backup_to_dir" "" "0640" "$COUNT_LOCAL"
+			  fi
+		        fi
+		      fi
+		      if [ ! -z "$backup_base_alt" ];then
+			for dir in $backup_base_alt
+        		do
+			  if [ -d "$dir/$HOST/$backup_base_dir" ];then
+			    if [ ! -d "$dir/$HOST/$backup_base_dir/$BASE" ];then
+	    			mkdir $dir/$HOST/$backup_base_dir/$BASE
+			    fi
+			    if [ -d "$dir/$HOST/$backup_base_dir/$BASE" ];then
+			      echo "Backup alt to $dir/$HOST/$backup_base_dir/$BASE"
+			      backup_base $dir/$HOST/$backup_base_dir/$BASE
+			    fi
+			  fi
+		        done
+		      fi
+		      if [ ! -z "$backup_base_single" ];then
+	    		for dir in $backup_base_single
+	    		do
+			  if [ -d "$dir/$HOST/$backup_base_dir" ];then
+			    if [ ! -d "$dir/$HOST/$backup_base_dir/$BASE" ];then
+	    			mkdir "$dir/$HOST/$backup_base_dir/$BASE"
+			    fi
+			    if [ -d "$dir/$HOST/$backup_base_dir/$BASE" ];then
+			      backup_base_single "$dir/$HOST/$backup_base_dir/$BASE"
+			    fi
+			  fi
+	    		done
+		      fi
+		    else
+		      echo "-Err!($err)"
+		    fi
+		    if [ -f "$TMP/$FILES.$EXT" ];then
+		      rm $TMP/$FILES.$EXT
+		    fi
+		    if [ -f "$TMP/$FILES.$EXTB" ];then
+		      rm $TMP/$FILES.$EXTB
+		    fi
+		    echo
+		else
+	    	    echo "Error create backup!"
+		fi
+	    fi
+	  else
+	    echo "Error backup_dir_base $BASE!"
+	  fi
+	done
+	;;
+esac
+}
+
+backup_dump()
+{
+#backup_base_enable="YES"
+#backup_base="/ /var /usr"
+#backup_base_alt="/mnt/backup/backup /mnt/daemon/backup"
+#backup_base_single="/mnt/backup/data/backup"
+#backup_base_tmp="/mnt/users/tmp"
+#backup_base_dir="backup_dump"
+#BACKUP_USER="root"
+#BACKUP_ACCESS="0640"
+#COUNT_SINGLE="3"
+#COUNT_COUNT="12"
+#DAY_COUNT="14"
+#WEEK_COUNT="5"
+#MONTH_COUNT="12"
+#YEAR_COUNT="10"
+#GBAK="dump -Luf-"
+
+HOST=`hostname`
+EXT="dmp"
+FILES=""
+FILE1="%Y_%m_%d-%H_%M_%S"
+PATH="$PATH:/usr/local/bin:/usr/local/sbin"
+echo "PATH=$PATH"
+
+case "$backup_base_enable" in
+    [Yy][Ee][Ss])
+	echo "Dump system:"
+	backup_base_create_dir
+	if [ ! -z $BACKUP_EXT ];then
+	  EXT=$BACKUP_EXT
+	fi
+	for BASED in $backup_base
+	do
+	    BASE="`echo $BASED|sed 's/\//_/g'`"
+	    if [ $BASE = "_" ];then
+	      BASE="_root"
+	    fi
+	    FILES="$BASE-`date +$FILE1`"
+	    if [ -z "`echo $EXT|grep -E 'z$'`" ];then
+	      EXT="$EXT.gz"
+	    fi
+	    cd $TMP
+	    echo "$BASE; $FILES.$EXT "
+	    echo>$FILES.$EXT
+	    chmod 600 $FILES.$EXT
+	    chown root $FILES.$EXT
+	    if [ ! -z "`echo $EXT|grep -E '\.gz$'`" ];then
+	      nice -20 $GBAK $BASED | gzip > $FILES.$EXT
+	     else
+	      nice -20 $GBAK $BASED > $FILES.$EXT
+#	      echo "not gzip"
+	    fi
+	    if [ ! -z "$backup_base_alt" ];then
+	      for dir in $backup_base_alt
+	      do
+		  if [ -d "$dir/$HOST/$backup_base_dir" ];then
+		    if [ ! -d "$dir/$HOST/$backup_base_dir/$BASE" ];then
+	    		mkdir $dir/$HOST/$backup_base_dir/$BASE
+		    fi
+		    if [ -d "$dir/$HOST/$backup_base_dir/$BASE" ];then
+		      echo "Copy to $dir/$HOST/$backup_base_dir/$BASE"
+		      backup_base $dir/$HOST/$backup_base_dir/$BASE
+		    fi
+		  fi
+	      done
+	    fi
+	    if [ ! -z "$backup_base_single" ];then
+	      for dir in $backup_base_single
+	      do
+		  if [ -d "$dir/$HOST/$backup_base_dir" ];then
+		    if [ ! -d "$dir/$HOST/$backup_base_dir/$BASE" ];then
+	    		mkdir "$dir/$HOST/$backup_base_dir/$BASE"
+		    fi
+		    if [ -d "$dir/$HOST/$backup_base_dir/$BASE" ];then
+		      backup_base_single "$dir/$HOST/$backup_base_dir/$BASE"
+		    fi
+		  fi
+	      done
+	    fi
+	    if [ -f "$TMP/$FILES.$EXT" ];then
+	      rm $TMP/$FILES.$EXT
+	    fi
+	    echo
+	done
+    ;;
+esac
+}
+
+backup_dir()
+{
+#backup_base_enable="YES"
+#backup_base="/etc /usr/local/etc"
+#backup_base_alt="/mnt/backup/backup /mnt/daemon/backup"
+#backup_base_single="/mnt/backup/data/backup"
+#backup_base_filter="/usr/local/testsystem/backup_dir_filter.conf"
+#backup_base_tmp="/mnt/users/tmp"
+#backup_base_dir="backup_dir"
+#BACKUP_USER="root"
+#BACKUP_ACCESS="0640"
+#COUNT_SINGLE="3"
+#COUNT_COUNT="12"
+#DAY_COUNT="14"
+#WEEK_COUNT="5"
+#MONTH_COUNT="12"
+#YEAR_COUNT="10"
+#GBAK="tar -zcf"
+
+FILTER=""
+if [ ! -z "$backup_base_filter" -a -f "$backup_base_filter" ];then
+    FILTER="-X $backup_base_filter"
+fi
+HOST=`hostname`
+EXTB='tar'
+EXT="$EXTB.gz"
+FILES=""
+FILE1="%Y_%m_%d-%H_%M_%S"
+PATH="$PATH:/usr/local/bin:/usr/local/sbin"
+echo "PATH=$PATH"
+
+case "$backup_base_enable" in
+    [Yy][Ee][Ss])
+	echo "Backup dir files:"
+	backup_base_create_dir
+	for dir in $backup_base
+	do
+          if [ -d "$dir" ];then
+	    BASE=`echo $dir | sed "s/\//_/g"`
+	    FILES="$BASE-`date +$FILE1`"
+	    echo -n "$dir; "
+	    cd $TMP
+	    echo > $FILES.$EXT
+	    chmod 600 $FILES.$EXT
+	    chown root $FILES.$EXT
+	    echo -n "$GBAK $FILES.$EXT $FILTER -C $dir . "
+	    nice -20 $GBAK $FILES.$EXT $FILTER -C $dir .
+	    echo "-ok."
+	    if [ ! -z "$backup_base_alt" ];then
+	      for dir in $backup_base_alt
+	      do
+		  if [ -d "$dir/$HOST/$backup_base_dir" ];then
+		    if [ ! -d "$dir/$HOST/$backup_base_dir/$BASE" ];then
+	    		mkdir $dir/$HOST/$backup_base_dir/$BASE
+		    fi
+		    if [ -d "$dir/$HOST/$backup_base_dir/$BASE" ];then
+		      echo "Copy to $dir/$HOST/$backup_base_dir/$BASE"
+		      backup_base $dir/$HOST/$backup_base_dir/$BASE
+		    fi
+		  fi
+	      done
+	    fi
+	    if [ ! -z "$backup_base_single" ];then
+	      for dir in $backup_base_single
+	      do
+		  if [ -d "$dir/$HOST/$backup_base_dir" ];then
+		    if [ ! -d "$dir/$HOST/$backup_base_dir/$BASE" ];then
+	    		mkdir "$dir/$HOST/$backup_base_dir/$BASE"
+		    fi
+		    if [ -d "$dir/$HOST/$backup_base_dir/$BASE" ];then
+		      backup_base_single "$dir/$HOST/$backup_base_dir/$BASE"
+		    fi
+		  fi
+	      done
+	    fi
+	    if [ -f "$TMP/$FILES.$EXT" ];then
+	      rm $TMP/$FILES.$EXT
+	    fi
+	    echo
+	  else
+	    echo "Error $dir!"
+	  fi
+	done
+    ;;
+esac
+}
+
+testlink()
+{
+testlink="$1"
+wget --no-proxy --connect-timeout=5 --read-timeout=5 $testlink -P/tmp 2>&1|while read tmp
+do
+  if [ ! -z "`echo $tmp|grep saved`" ];then
+    echo OK
+  fi
+done
+if [ -f "/tmp/index.html" ];then
+rm /tmp/index.html
+fi
+}
+
+test_raid()
+{
+  scrpt=$1
+  pri=$2
+  newfile="/var/log/_$scrpt.new"
+  oldfile="/var/log/_$scrpt.old"
+  file="%Y_%m_%d-%H_%M_%S"
+  cpfile="/tmp/_$scrpt-`date +$file`"
+  if [ -s $newfile ]; then
+    cp $newfile $oldfile
+    $scrpt > $newfile 2> /dev/null
+  else
+    $scrpt > $newfile 2> /dev/null
+    cp $newfile $oldfile 
+  fi
+  if [ ! -z "`diff -u $oldfile $newfile`" ];then
+    cp $newfile $cpfile
+  fi
+  diff -u $oldfile $newfile | grep '^+' | grep -v '^+++'| sed 's/^+//'| while read msg
+  do
+    $testsystem/daemon_pager.sh "$msg" $pri
+  done
+}
+
+disks_raid()
+{
+  df -lh|while read Filesystem Size Used Avail Capacity Mounted
+  do
+    echo "$Filesystem $Size $Mounted"
+  done
+}
+
+ata_raid()
+{
+  cli="/sbin/atacontrol"
+  if [ -x "$cli" ];then
+    for raid in `find /dev/ -name 'ar[0-9]' -type c`
+    do
+      raid=`basename $raid`
+      status=`/sbin/atacontrol status $raid`
+      echo $status
+    done
+  fi
+}
+
+3ware_raid()
+{
+  cli="/usr/local/sbin/twcli"
+  if [ -x "$cli" ];then
+    for ctrl in `$cli info | awk '/^c/ { print $1 }'`
+    do
+      $cli info $ctrl|grep -E "RAID|bbu"|while read t1 t2 t3 t4 t5
+      do
+        echo "$ctrl: $t1 $t2 $t3"
+      done
+    done
+  fi
+}
+
+raid_status()
+{
+  test_raid disks_raid 2
+  test_raid ata_raid 1
+  test_raid 3ware_raid 1
+}
+
+virus_check_home()
+{
+  if [ ! -r /usr/local/bin/clamdscan ];then
+    $testsystem/daemon_pager.sh "Not found clamdscan" "1"
+    exit 1
+  fi
+  ls -1 /home|while read hdir
+  do
+    dirs=""
+    if [ -d "/home/$hdir/www" ];then
+        dirs="$dirs /home/$hdir/www"
+    fi
+    if [ -d "/home/$hdir/cgi-bin" ];then
+      dirs="$dirs /home/$hdir/cgi-bin"
+    fi
+    if [ -d "/home/$hdir/local" ];then
+        dirs="$dirs /home/$hdir/local"
+    fi
+    if [ -d "/home/$hdir/wwws" ];then
+        dirs="$dirs /home/$hdir/wwws"
+    fi
+    if [ -d "/home/$hdir/cgi-bins" ];then
+        dirs="$dirs /home/$hdir/cgi-bins"
+    fi
+    if [ -d "/home/$hdir/files" ];then
+        dirs="$dirs /home/$hdir/files"
+    fi
+    if [ -d "/home/$hdir/tmp" ];then
+        tmp="/home/$hdir/tmp"
+     else
+        tmp="/tmp"
+    fi
+    if [ ! -z "$dirs" ];then
+      echo "============ $hdir ============"
+      /usr/local/bin/clamdscan -m --move=$tmp $dirs
+    fi
+  done
+}
+
+centurion_addusers()
+{
+  centurion_name=$1
+  centurion_id=$2
+  if ! pw groupshow "${centurion_name}" 2>/dev/null 1>&2; then
+	if pw groupadd ${centurion_name} -g ${centurion_id}; then
+		echo "Added group \"${centurion_name}\"."
+	else
+		echo "Adding group \"${centurion_name}\" failed..."
+		exit 1
+	fi
+  fi
+  if ! pw usershow "${centurion_name}" 2>/dev/null 1>&2; then
+	if pw useradd ${centurion_name} -u ${centurion_id} -g ${centurion_name} -h - \
+		-s "/sbin/nologin" -d "/nonexistent" \
+		-c "Centurion system"; \
+	then
+		echo "Added user \"${centurion_name}\"."
+	else
+		echo "Adding user \"${centurion_name}\" failed..."
+		exit 1
+	fi
+  fi
+}
+
+centurion_perms()
+{
+  pfile=$1
+  pperm=$2
+  puser=$3
+  pgroup=$4
+  u=`echo $pperm|cut -c2-4|sed "s/-//g"`
+  g=`echo $pperm|cut -c5-7|sed "s/-//g"`
+  o=`echo $pperm|cut -c8-10|sed "s/-//g"`
+  chown $puser:$pgroup $pfile
+  chmod u=$u,g=$g,o=$o $pfile
+}
+
+centurion_update()
+{
+  centurion_name="centurion"
+  centurion_id=150
+  centurion="/usr/local/etc/$centurion_name"
+  centurion_distrib="/mnt/system/_centurion"
+  centurion_addusers $centurion_name $centurion_id
+  if [ -d "$centurion_distrib" ];then
+    repl="`echo $centurion|sed \"s/\//\./g\"`"
+    find $centurion|while read files
+    do
+      if [ "$files" != "$centurion" ];then
+        files=`echo $files|sed "s/$repl\///"`
+        log=`echo $files|cut -d\/ -f1`
+        conf=`echo $files|cut -d\. -f2`
+        if [ -e "$centurion_distrib/$files" ];then
+          files_cur=`ls -ld $centurion/$files|cut -d' ' -f1,4-8`
+          files_new=`ls -ld $centurion_distrib/$files|cut -d' ' -f1,4-8`
+          ver_cur="0"
+          ver_new="0"
+          lin=`echo $files_cur|cut -c1-1`
+          if [ "$lin" != "l" ];then
+            if [ "$lin" = "d" -o "$log" = "acctlog" -o "$conf" = "conf" ];then
+              files_cur=`echo $files_cur|cut -d' ' -f1-3`
+              files_new=`echo $files_new|cut -d' ' -f1-3`
+            else
+              ver_cur=`cat $centurion/$files|head -7|grep '$VERSION='|cut -d\= -f2|cut -d\' -f2|sed "s/\.//"`
+              ver_new=`cat $centurion_distrib/$files|head -7|grep '$VERSION='|cut -d\= -f2|cut -d\' -f2|sed "s/\.//"`
+              if [ -z "$ver_cur" ];then
+                ver_cur=0
+              fi
+              if [ -z "$ver_new" ];then
+                ver_new=0
+              fi
+            fi
+            if [ "$files_new" != "$files_cur" -o "$ver_cur" -lt "$ver_new" ];then
+              if [ ! -d "$centurion_distrib/$files" -a -r "$centurion_distrib/$files" ];then
+                if [ "$ver_cur" -lt "$ver_new" -a "$log" != "acctlog" -a "$conf" != "conf" ];then
+                  echo "copy new version=$ver_new $files (old=$ver_cur)"
+                  cp $centurion_distrib/$files $centurion/$files
+                fi
+              fi
+              echo "upd $files ($files_cur)!=($files_new)"
+              centurion_perms $centurion/$files $files_new
+            fi
+          fi
+        fi
+      else
+        files_cur=`ls -ld $centurion|cut -d' ' -f1,4-6`
+        if [ "$files_cur" != "drwxr-xr-x centurion  centurion" ];then
+          echo "upd $centurion $files_cur"
+          chown $centurion_name:$centurion_name $centurion
+          chmod 0755 $centurion
+        fi
+      fi
+    done
+  else
+    echo "Not found distrib centurion=$centurion_distrib!"
+  fi
+}
+
+backup_cisco()
+{
+  echo "######  CISCO BACKUP CONFIG $cisco_name ######"
+  for cisco in $cisco_routers
+  do
+    echo -n "$cisco.$cisco_domain "
+    if [ ! -z "`ping -c 2 -t 1 $cisco.$cisco_domain 2>&1 |grep time`" ];then
+      echo -n "Reading "
+      echo>$cisco_tmp_dir/$cisco.$cisco_domain
+      chmod 600 $cisco_tmp_dir/$cisco.$cisco_domain
+      n=0
+      while [ $n -lt $cisco_retry ]
+      do
+        rsh $cisco.$cisco_domain show running-config|sed "s///g"|grep -v "Building configuration"|grep -v "Current configuration" > $cisco_tmp_dir/$cisco.$cisco_domain
+        if [ ! -z "`cat $cisco_tmp_dir/$cisco.$cisco_domain|grep '^end$'`" ];then
+          echo -n "Ok"
+          if [ -r "$cisco_dir/$cisco.$cisco_domain" ];then
+            diff -u $cisco_dir/$cisco.$cisco_domain $cisco_tmp_dir/$cisco.$cisco_domain
+          fi
+          cp $cisco_tmp_dir/$cisco.$cisco_domain $cisco_dir/$cisco.$cisco_domain
+          n=10
+         else
+          echo -n "Error$n "
+        fi
+        n=`expr $n + 1`
+      done
+      echo "!"
+      rm $cisco_tmp_dir/$cisco.$cisco_domain
+    else
+      echo "Unreachable! "
+    fi
+  done
+}
+
+update_cisco_patch()
+{
+  cisco_dir_patch="/mnt/system/_ftp/cisco_patch"
+  cisco_rsh="rsh -l root -t 10"
+  cisco_ping="ping -c 2 -t 1"
+  cisco_ftp_login="cisco:chuchelomorskoe"
+  cisco_ftp_patch="ftp://cisco.edu35.ru/cisco_patch"
+  cisco_ftp_patchi="ftp://$cisco_ftp_login@cisco.edu35.ru/cisco_patch"
+
+  conf_file="$testsystem/$1.conf"
+  if [ ! -r $conf_file ];then
+    $testsystem/daemon_pager.sh "Not found $conf_file" "1"
+    exit 1
+  else
+    . $conf_file
+  fi
+  echo "######  CISCO UPDATE CONFIG $cisco_name ######"
+  for cisco in $cisco_routers
+  do
+    echo -n "$cisco.$cisco_domain ping-"
+    test_local=`$cisco_ping $cisco.$cisco_domain 2>&1 |grep time`
+    test_id="apply/$cisco.$cisco_domain"
+    test_cisco=""
+    if [ -z "$test_local" ];then
+      echo -n "err-pingi-"
+      cisco="${cisco}i"
+      cisco_ftp_patch=$cisco_ftp_patchi
+      test_local=`$cisco_ping $cisco.$cisco_domain 2>&1 |grep time`
+    fi
+    if [ ! -z "$test_local" ];then
+      echo -n "ok-cisco-"
+      test_cisco=`$cisco_rsh $cisco.$cisco_domain "show clock" 2>&1 |grep -v timeout`
+    fi
+    if [ ! -z "$test_cisco" ];then
+      echo -n "ok"
+      patch_ok="0"
+      patch_err="0"
+      files=`ls -1 "$cisco_dir_patch"|grep "patch"|sort`
+      for file0 in $files
+      do
+        id=`echo $file0|cut -d\- -f1`
+        proc=`ps -axw|grep -v grep|grep "$cisco_rsh $cisco.$cisco_domain"`
+#        echo -n "-$proc-"
+        if [ ! -f "$cisco_dir_patch/$test_id-$id" -a -z "$proc" ];then
+          echo -n "-read_$id-"
+          if [ -r "$cisco_dir_patch/$id-patch" -a -r "$cisco_dir_patch/$id-test" -a -r "$cisco_dir_patch/$id-res" ];then
+            test_upd=`cat $cisco_dir_patch/$id-test`
+            test_upd_res=`cat $cisco_dir_patch/$id-res`
+            echo -n "test-"
+            test_count=`$cisco_rsh $cisco.$cisco_domain "$test_upd" | grep "$test_upd_res"|wc -l|sed 's/ //g'`
+            if [ "$test_count" -eq "1" ];then
+              echo -n "ok-patch-"
+              copy_patch=`echo ""|$cisco_rsh $cisco.$cisco_domain copy $cisco_ftp_patch/$id-patch run`
+              if [ ! -z "`echo $copy_patch|grep '\[OK \-'`" ];then
+                echo -n "ok"
+                echo "$copy_patch" > $cisco_dir_patch/$test_id-$id
+                patch_ok=`expr $patch_ok + 1`
+               else
+                echo "$copy_patch"|mail -s "$cisco.$cisco_domain Error copy patch $id" root
+                echo -n "Error"
+                patch_err=`expr $patch_err + 1`
+              fi
+             else
+              if [ "$test_count" -eq "2" ];then
+                echo "$copy_patch" > $cisco_dir_patch/$test_id-$id
+                echo -n "allready"
+               else
+                if [ "$test_count" -eq "0" ];then
+                  echo "$copy_patch" > $cisco_dir_patch/$test_id-$id
+                fi
+                echo -n "Error$test_count"
+              fi
+            fi
+           else
+            echo -n "Error"
+          fi
+        fi
+      done
+      if [ "$patch_err" -eq "0" -a "$patch_ok" -gt "0" ];then
+        echo -n "write-"
+        if [ ! -z "`$cisco_rsh $cisco.$cisco_domain write memory | grep '\[OK\]'`" ];then
+          echo -n "OK"
+         else
+          echo -n "ERROR$patch_ok"
+        fi
+      fi
+      echo "!"
+    else
+      echo "Unreachable! "
+    fi
+#    exit
+  done
+}
+
+##### file complit testsystem #####

@@ -1,0 +1,93 @@
+#!/bin/sh
+
+# version=2018021901
+
+testsystem_root="/usr/local/etc"
+testsystem_dir="testsystem"
+testsystem="$testsystem_root/$testsystem_dir"
+testsystem_distrib="/mnt/system/_testsystem"
+LANG="ru_RU.UTF-8"
+LC_ALL="ru_RU.UTF-8"
+LC_COLLATE="POSIX"
+LC_CTYPE="ru_RU.UTF-8"
+
+testsystem_update()
+{
+  daemon=$1
+  daemon_cur=$2
+  chown1=$3
+  chmod1=$4
+  new_daemon="$testsystem_distrib/$daemon"
+  cur_daemon="$daemon_cur/$daemon"
+  tmp_daemon="$testsystem/$daemon.tmp"
+  if [ -f "$testsystem/daemon.conf" -a -r "$testsystem/daemon.conf" ];then
+    if [ -f "$new_daemon" -a -r "$new_daemon" ];then
+      new_ver=`cat $new_daemon|head -4|grep version|grep =|cut -f2 -d=`
+      if [ -z "$new_ver" ];then
+        new_ver=0
+      fi
+      if [ -f "$cur_daemon" ];then
+        cur_ver=`cat $cur_daemon|head -4|grep version|grep =|cut -f2 -d=`
+        if [ -z "$cur_ver" ];then
+          cur_ver=0
+        fi
+      else
+        cur_ver=0
+      fi
+      if [ "$new_ver" -gt "$cur_ver" ];then
+        if [ -f "$tmp_daemon" ];then
+	  rm $tmp_daemon
+	fi
+        cp $new_daemon $tmp_daemon
+        chown $chown1 $tmp_daemon
+        chmod $chmod1 $tmp_daemon
+	test_daemon=`cat $tmp_daemon|grep '##### file complit testsystem #####'`
+	if [ ! -z "$test_daemon" ];then
+          echo "Update $daemon new_ver=$new_ver cur_ver=$cur_ver"
+	  if [ "$daemon" = "testsystem.sh" ];then
+	    mv -f $tmp_daemon $cur_daemon ; . $cur_daemon
+	    echo "Error move $cur_daemon"
+	  else
+	    mv -f $tmp_daemon $cur_daemon
+	  fi
+	else
+	  echo "Error update $daemon , not full copy"
+          if [ -f "$tmp_daemon" ];then
+	    rm $tmp_daemon
+	  fi
+	fi
+      fi
+    fi
+  fi
+}
+
+testsystem_perm()
+{
+  ls -l "$testsystem_root"|grep "$testsystem_dir"|while read attr c user group other
+  do
+    if [ "$attr" != "drwxr-x---" -o "$user" != "root" -o "$group" != wheel ];then
+      echo "Chown $testsystem"
+      chown -R root:wheel $testsystem
+      chmod -R g-w,o-rwx $testsystem
+    fi
+  done
+}
+
+testsystem_monitor()
+{
+  if [ -f "$testsystem/daemon.conf" -a -r "$testsystem/daemon.conf" ];then
+    cat "$testsystem/daemon.conf"|cut -d'#' -f1|while read param
+    do
+      if [ ! -z "$param" ];then
+        dc=`ps -axw|grep -v grep|grep "$testsystem/daemon.sh $param"|wc -l`
+        if [ "$dc" -gt "1" ];then
+          $testsystem/daemon_pager.sh "daemon_start.sh $param already started counts=$dc" "1"
+         else
+          $testsystem/daemon.sh "$param" &
+        fi
+      fi
+    done
+  fi
+}
+
+##### file complit testsystem #####
